@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+outputs/
+**/_es_generated_scene*.xml
+.DS_Store
+third_party/
+MUJOCO_LOG.TXT

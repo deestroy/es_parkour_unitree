@@ -1,0 +1,17 @@
+# CPU-only ES-Parkour recreation (Python 3.9, macOS x86_64).
+# Core sim + learning:
+mujoco==3.2.7          # newest with a cp39 wheel; 3.3+ drops py3.9
+spikingjelly==0.0.0.0.14
+torch==2.2.2
+torchvision==0.17.2
+snntorch==1.0.0        # fallback spiking primitives
+numpy==1.23.5          # <2.0 for pybullet/gym compatibility
+matplotlib>=3.4
+pyyaml>=6.0
+tqdm>=4.64
+# Optional (Perlin / image heightfields in unitree terrain_tool): opencv-python, noise
+#
+# Not pip-installable — clone separately into third_party/:
+#   git clone --depth 1 https://github.com/unitreerobotics/unitree_mujoco.git \
+#     third_party/unitree_mujoco
+# (provides the Unitree Go2 MJCF + terrain_tool). NOTE: go2.xml is patched to add a "head" camera.
