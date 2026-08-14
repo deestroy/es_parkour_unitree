@@ -45,7 +45,8 @@ def load_policy(kind, ckpt):
     ck = torch.load(ckpt, map_location="cpu")
     if kind == "teacher":
         m = TeacherActorCritic(); m.load_state_dict(ck["model"]); m.eval()
-        mean = ck["norm_mean"].astype(np.float32); std = np.sqrt(ck["norm_var"] + 1e-8).astype(np.float32)
+        mean = np.asarray(ck["norm_mean"], dtype=np.float32)
+        std = np.sqrt(np.asarray(ck["norm_var"]) + 1e-8).astype(np.float32)
         return m, (mean, std)
     if kind == "student":
         hw = tuple(ck.get("event_hw", (48, 64)))

@@ -30,6 +30,12 @@ class PPOConfig:
     vf_coef: float = 0.5
     max_grad_norm: float = 1.0
     log_every: int = 1
+    # KL-adaptive learning rate (rsl_rl-style). Fixed lr=1e-3 caused a reproducible late-training
+    # collapse (~1.2M steps): with 5 reuse epochs, updates go destructively off-policy once the
+    # policy is good. Shrink lr when the update KL overshoots, grow it when it undershoots.
+    desired_kl: float = 0.01
+    lr_min: float = 1e-5
+    lr_max: float = 1e-2
 
 
 class RunningNorm:
@@ -54,6 +60,8 @@ class PPO:
         self.model = model
         self.cfg = cfg or PPOConfig()
         self.opt = torch.optim.Adam(model.parameters(), lr=self.cfg.lr)
+        self.lr = self.cfg.lr
+        self.last_kl = 0.0
         self.obs_dim = vec_env.teacher_obs_dim
         self.adim = vec_env.ACTION_DIM
         self.norm = RunningNorm(self.obs_dim)
@@ -131,6 +139,16 @@ class PPO:
             for s in range(0, n, cfg.minibatch):
                 b = idx[s:s + cfg.minibatch]
                 logp, ent, v = self.model.evaluate(obs_t[b], act_t[b])
+                # KL-adaptive lr (approx KL of the update so far on this minibatch)
+                with torch.no_grad():
+                    log_ratio = logp - logp_old_t[b]
+                    kl = float(((log_ratio.exp() - 1.0) - log_ratio).mean())
+                    if kl > 2.0 * cfg.desired_kl:
+                        self.lr = max(cfg.lr_min, self.lr / 1.5)
+                    elif kl < cfg.desired_kl / 2.0 and kl >= 0.0:
+                        self.lr = min(cfg.lr_max, self.lr * 1.5)
+                    for g in self.opt.param_groups:
+                        g["lr"] = self.lr
                 ratio = (logp - logp_old_t[b]).exp()
                 s1 = ratio * adv_t[b]
                 s2 = torch.clamp(ratio, 1 - cfg.clip, 1 + cfg.clip) * adv_t[b]
@@ -140,6 +158,7 @@ class PPO:
                 self.opt.zero_grad(); loss.backward()
                 nn.utils.clip_grad_norm_(self.model.parameters(), cfg.max_grad_norm)
                 self.opt.step()
+        self.last_kl = kl
         return float(-torch.min(s1, s2).mean()), float((v - ret_t[b]).pow(2).mean()), float(ent.mean())
 
     def train(self, on_log=None):
@@ -156,7 +175,8 @@ class PPO:
             if it % cfg.log_every == 0:
                 by = {k: round(np.mean(v), 2) for k, v in self.ep_by_kind.items()}
                 print(f"[{steps:8d}] ret={mret:7.2f} succ={msuc:4.2f} pi={pi_l:+.3f} "
-                      f"vf={v_l:.3f} ent={ent:.2f} by_kind={by}", flush=True)
+                      f"vf={v_l:.3f} ent={ent:.2f} lr={self.lr:.1e} kl={self.last_kl:.4f} "
+                      f"by_kind={by}", flush=True)
             if on_log:
                 on_log(steps, mret, msuc)
         return self.model

@@ -73,8 +73,9 @@ def main():
         if args.curriculum:
             frac = min(1.0, steps / (0.6 * max(1, args.steps)))
             env.set_difficulty(frac * args.difficulty)
-        # keep the best-so-far policy (once past the early curriculum warmup)
-        if steps > 0.4 * args.steps and mret == mret and mret > state["best"]:
+        # keep the best-so-far policy (gate armed early: the previous 40% gate missed the peak,
+        # which landed at ~20% of a long run and was followed by decay)
+        if steps > 0.1 * args.steps and mret == mret and mret > state["best"]:
             state["best"] = mret
             save(best_path)
         if state["it"] % args.save_every == 0:

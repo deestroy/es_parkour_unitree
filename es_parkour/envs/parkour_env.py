@@ -50,7 +50,7 @@ class ParkourConfig:
     w_alive: float = 0.08
     w_heading: float = 0.05
     w_torque: float = 2e-4
-    w_actrate: float = 0.02
+    w_actrate: float = 0.05          # stronger smoothing: less leg jitter
     w_angvel: float = 0.02
     w_upright: float = 0.2            # lighter, so "sit tilted but alive" is not a stable optimum
     w_airtime: float = 0.5           # reward taking steps (feet air time); lowered - it favored hops
@@ -62,9 +62,13 @@ class ParkourConfig:
     # Trot offsets put FL/FR (and RL/RR) in ANTI-phase, so the front legs never land together —
     # the timing structure of a dog's running gait.
     w_gait: float = 0.6
-    gait_freq: float = 1.8           # Hz, step cycle frequency
+    # anti-drag: reward swing-phase feet for lifting toward this height above local ground.
+    # Without it, a 1 mm ground-skim counts as a "swing" and the rear legs learn to drag.
+    w_clearance: float = 0.5
+    clearance_target: float = 0.08   # m
+    gait_freq: float = 1.5           # Hz, step cycle frequency (1.8 looked frantic; calmer dog trot)
     gait_offsets: tuple = (0.0, 0.5, 0.5, 0.0)   # phase offset per foot (FL, FR, RL, RR) = trot
-    gait_duty: float = 0.55          # fraction of the cycle each foot should be in stance
+    gait_duty: float = 0.6           # fraction of the cycle each foot should be in stance
     w_goal: float = 10.0
     # termination
     tip_grav_z: float = -0.4          # projected gravity z above this => tipped over
@@ -111,13 +115,17 @@ class ParkourEnv:
         for k, v in mapping.items():
             self.kind_difficulty[k] = float(np.clip(v, 0.0, 1.0))
 
-    # ----- ground clearance under the base --------------------------------------
-    def _ground_under_base(self) -> float:
-        base = self.robot.base_pos
-        pnt = np.array([base[0], base[1], base[2] + 1.0])
+    # ----- ground height queries (terrain group only) -----------------------------
+    def _ground_under_point(self, x: float, y: float, from_z: float = None) -> float:
+        z0 = (self.robot.base_pos[2] if from_z is None else from_z) + 1.0
+        pnt = np.array([x, y, z0])
         dist = mujoco.mj_ray(self.model, self.data, pnt, np.array([0.0, 0.0, -1.0]),
                              O._ONLY_GROUP0, 1, -1, self._geomid)
         return pnt[2] - dist if dist >= 0 else -np.inf
+
+    def _ground_under_base(self) -> float:
+        base = self.robot.base_pos
+        return self._ground_under_point(base[0], base[1])
 
     # ----- reset -----------------------------------------------------------------
     def _get_bundle(self, kind: str, difficulty: float):
@@ -199,11 +207,22 @@ class ParkourEnv:
         # Trot offsets (0, .5, .5, 0) force the front pair anti-phase — no more both-fronts-together.
         self.gait_phase = (self.gait_phase + self.cfg.gait_freq * self.cfg.control_dt) % 1.0
         gait_score = 0.0
+        clearance_score = 0.0
+        foot_pos = self.robot.foot_positions()
+        n_swing = 0
         for i in range(4):
             leg_phase = (self.gait_phase + self.cfg.gait_offsets[i]) % 1.0
             should_stance = leg_phase < self.cfg.gait_duty
             gait_score += 1.0 if bool(contact[i]) == should_stance else -1.0
+            if not should_stance:
+                # swing phase: the foot must actually LIFT, not skim the ground. Reward height above
+                # the local ground up to a target — the anti-drag term (rear feet were dragging).
+                n_swing += 1
+                gz = self._ground_under_point(foot_pos[i, 0], foot_pos[i, 1])
+                h = foot_pos[i, 2] - gz
+                clearance_score += min(h, self.cfg.clearance_target) / self.cfg.clearance_target
         gait_score /= 4.0                     # in [-1, 1]
+        clearance_score = clearance_score / n_swing if n_swing else 0.0   # in [0, 1]
 
         # termination checks
         pg = self.robot.projected_gravity
@@ -232,6 +251,7 @@ class ParkourEnv:
             - c.w_vz * vz * vz
             - c.w_allfly * all_fly
             + c.w_gait * gait_score
+            + c.w_clearance * clearance_score
             - c.w_drift * abs(y)
         )
         if self.success:

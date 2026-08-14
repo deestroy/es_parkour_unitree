@@ -5,3 +5,4 @@ outputs/
 .DS_Store
 third_party/
 MUJOCO_LOG.TXT
+es_parkour_unitree/

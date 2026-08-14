@@ -51,6 +51,8 @@ class Go2:
         self.base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base_link")
         self.foot_geom_ids = [
             mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, g) for g in FOOT_GEOMS]
+        self.foot_body_ids = [
+            mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"{g}_foot") for g in FOOT_GEOMS]
 
     # ----- state -----------------------------------------------------------------
     @property
@@ -90,6 +92,10 @@ class Go2:
     def projected_gravity(self) -> np.ndarray:
         """World -z expressed in the base frame; a level robot reads ~(0, 0, -1)."""
         return self._rot_world_to_base().T @ np.array([0.0, 0.0, -1.0])
+
+    def foot_positions(self) -> np.ndarray:
+        """(4, 3) world positions of the feet (FL, FR, RL, RR)."""
+        return self.data.xpos[self.foot_body_ids].copy()
 
     def foot_contacts(self) -> np.ndarray:
         """Boolean (4,) — whether each foot geom is currently in contact."""
