@@ -47,7 +47,15 @@ class DistillDataset:
 
 @torch.no_grad()
 def collect_dataset(teacher_ckpt: str, n_samples: int = 2000, difficulty=None,
-                    kinds=None, depth_hw=(48, 64), threshold_c=0.15, seed=0) -> DistillDataset:
+                    kinds=None, depth_hw=(48, 64), threshold_c=0.15, seed=0,
+                    driver_student=None, device="cpu") -> DistillDataset:
+    """Collect (events, proprio, teacher_action, oracle_heading) transitions.
+
+    ``driver_student=None``  -> the TEACHER drives (behaviour-cloning warm-up data).
+    ``driver_student=StudentSNN`` -> DAGGER: the STUDENT drives (so the data covers the states the
+    student actually visits, including its mistakes) while the teacher labels every state with the
+    action it would have taken. This is the paper's "further interaction" phase.
+    """
     model, mean, std, ck_diff, ck_kinds = load_teacher(teacher_ckpt)
     difficulty = ck_diff if difficulty is None else difficulty
     kinds = kinds or ck_kinds
@@ -59,17 +67,28 @@ def collect_dataset(teacher_ckpt: str, n_samples: int = 2000, difficulty=None,
     E, P, A, Hd = [], [], [], []
     o = env.reset()
     prev_depth = o["depth"].copy()
+    h = driver_student.init_hidden(1, device=device) if driver_student is not None else None
     while len(E) < n_samples:
         t_obs = (ParkourEnv.teacher_obs(o) - mean) / std
-        act = model.action_mean(torch.as_tensor(t_obs, dtype=torch.float32).unsqueeze(0))[0].numpy()
+        label = model.action_mean(torch.as_tensor(t_obs, dtype=torch.float32).unsqueeze(0))[0].numpy()
 
         events = ev.channels(ev.diff(o["depth"], prev_depth))   # (2, H, W)
-        E.append(events); P.append(o["proprio"]); A.append(act); Hd.append(o["heading"])
+        E.append(events); P.append(o["proprio"]); A.append(label); Hd.append(o["heading"])
+
+        if driver_student is not None:
+            e_t = torch.as_tensor(events, dtype=torch.float32, device=device).unsqueeze(0)
+            p_t = torch.as_tensor(o["proprio"], dtype=torch.float32, device=device).unsqueeze(0)
+            act_drive, _, h = driver_student(e_t, p_t, h)
+            act_drive = act_drive.squeeze(0).cpu().numpy()
+        else:
+            act_drive = label
 
         prev_depth = o["depth"].copy()
-        o, _, done, _ = env.step(act)
+        o, _, done, _ = env.step(act_drive)
         if done:
             o = env.reset(); prev_depth = o["depth"].copy()
+            if driver_student is not None:
+                h = driver_student.init_hidden(1, device=device)
     env.close()
 
     return DistillDataset(
@@ -81,12 +100,16 @@ def collect_dataset(teacher_ckpt: str, n_samples: int = 2000, difficulty=None,
 
 
 def train_student(ds: DistillDataset, epochs=3, batch=8, lr=1e-3, T=4,
-                  base_channels=16, w_yaw=1.0, seed=0, log_every=20, device=None):
+                  base_channels=16, w_yaw=1.0, seed=0, log_every=20, device=None,
+                  init_student=None):
     torch.manual_seed(seed)
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     print(f"training student on device={device} (base_channels={base_channels}, T={T})")
     H, W = ds.events.shape[2], ds.events.shape[3]
-    student = StudentSNN(base_channels=base_channels, event_hw=(H, W), T=T).to(device)
+    if init_student is not None:
+        student = init_student.to(device)          # continue training (DAGGER rounds)
+    else:
+        student = StudentSNN(base_channels=base_channels, event_hw=(H, W), T=T).to(device)
     opt = torch.optim.Adam(student.parameters(), lr=lr)
     n = len(ds)
     hist = []

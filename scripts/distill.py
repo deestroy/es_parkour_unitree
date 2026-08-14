@@ -15,7 +15,7 @@ import torch
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from es_parkour.train.distill import collect_dataset, train_student  # noqa: E402
+from es_parkour.train.distill import collect_dataset, train_student, DistillDataset  # noqa: E402
 
 OUT = REPO / "outputs"
 OUT.mkdir(exist_ok=True)
@@ -31,15 +31,38 @@ def main():
     ap.add_argument("--T", type=int, default=4)
     ap.add_argument("--difficulty", type=float, default=None)
     ap.add_argument("--device", default=None, help="cuda / cpu (default: auto)")
+    ap.add_argument("--dagger-rounds", type=int, default=0,
+                    help="after the BC warm-up, N rounds of: student drives, teacher labels, retrain")
     ap.add_argument("--out", default=str(OUT / "student.pt"))
     args = ap.parse_args()
 
-    print(f"collecting {args.samples} teacher transitions from {args.teacher} ...")
+    import torch as _t
+    device = args.device or ("cuda" if _t.cuda.is_available() else "cpu")
+
+    print(f"[warm-up] collecting {args.samples} teacher-driven transitions from {args.teacher} ...")
     ds = collect_dataset(args.teacher, n_samples=args.samples, difficulty=args.difficulty)
     print(f"dataset: events={tuple(ds.events.shape)} proprio={tuple(ds.proprio.shape)}")
 
     student, hist = train_student(ds, epochs=args.epochs, batch=args.batch,
-                                  T=args.T, base_channels=args.base_channels)
+                                  T=args.T, base_channels=args.base_channels, device=device)
+
+    # DAGGER rounds: the student's own rollouts (with teacher labels) are aggregated into the
+    # dataset so training covers the states the student actually reaches — the paper's
+    # "further interaction and optimization of the student" phase.
+    for r in range(args.dagger_rounds):
+        n_r = max(1000, args.samples // 2)
+        print(f"[dagger {r+1}/{args.dagger_rounds}] collecting {n_r} student-driven transitions ...")
+        student.eval()
+        ds_r = collect_dataset(args.teacher, n_samples=n_r, difficulty=args.difficulty,
+                               driver_student=student, device=device)
+        ds = DistillDataset(
+            torch.cat([ds.events, ds_r.events]), torch.cat([ds.proprio, ds_r.proprio]),
+            torch.cat([ds.action, ds_r.action]), torch.cat([ds.heading, ds_r.heading]))
+        student.train()
+        student, h2 = train_student(ds, epochs=max(2, args.epochs - 2), batch=args.batch,
+                                    T=args.T, base_channels=args.base_channels,
+                                    device=device, init_student=student)
+        hist += h2
 
     torch.save({"model": student.state_dict(), "T": args.T,
                 "base_channels": args.base_channels,

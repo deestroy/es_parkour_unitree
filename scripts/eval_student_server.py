@@ -32,7 +32,10 @@ for kind in ["flat", "gap", "step", "hurdle", "parkour"]:
                                        depth_hw=hw, episode_seconds=9.0), seed=seed)
         o = env.reset(kind=kind); prev = o["depth"].copy()
         h = sg.init_hidden(1, device=dev); done = False; info = {}
+        reset_h = len(sys.argv) > 2 and sys.argv[2] == "--reset-hidden"
         while not done:
+            if reset_h:
+                h = sg.init_hidden(1, device=dev)
             e = torch.as_tensor(ev.channels(ev.diff(o["depth"], prev)),
                                 dtype=torch.float32, device=dev).unsqueeze(0)
             p = torch.as_tensor(o["proprio"], dtype=torch.float32, device=dev).unsqueeze(0)
