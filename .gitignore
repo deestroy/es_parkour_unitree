@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
-outputs/
+outputs/*
+!outputs/gif/
 **/_es_generated_scene*.xml
 .DS_Store
 third_party/

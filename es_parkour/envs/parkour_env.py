@@ -50,7 +50,7 @@ class ParkourConfig:
     w_alive: float = 0.08
     w_heading: float = 0.05
     w_torque: float = 2e-4
-    w_actrate: float = 0.05          # stronger smoothing: less leg jitter
+    w_actrate: float = 0.1           # smoothing (raised again: front-leg jitter persisted at 0.05)
     w_angvel: float = 0.02
     w_upright: float = 0.2            # lighter, so "sit tilted but alive" is not a stable optimum
     w_airtime: float = 0.5           # reward taking steps (feet air time); lowered - it favored hops
@@ -66,6 +66,14 @@ class ParkourConfig:
     # Without it, a 1 mm ground-skim counts as a "swing" and the rear legs learn to drag.
     w_clearance: float = 0.5
     clearance_target: float = 0.08   # m
+    # natural-posture terms (visual review: front legs jittery/overworked, rear underused, trunk
+    # crumpling). Keep the trunk at dog height, balance front/rear effort, stay near the natural
+    # joint configuration.
+    w_height: float = 2.0            # penalize (trunk clearance - height_target)^2
+    height_target: float = 0.27      # m, the home-stance trunk height
+    w_fr_balance: float = 0.03       # penalize (mean|tau_front| - mean|tau_rear|)^2 -> share the work
+                                     # (0.15 rivalled the progress reward and suppressed all dynamic gait)
+    w_posture: float = 0.05          # penalize squared deviation from the default stance pose
     gait_freq: float = 1.5           # Hz, step cycle frequency (1.8 looked frantic; calmer dog trot)
     gait_offsets: tuple = (0.0, 0.5, 0.5, 0.0)   # phase offset per foot (FL, FR, RL, RR) = trot
     gait_duty: float = 0.6           # fraction of the cycle each foot should be in stance
@@ -180,12 +188,18 @@ class ParkourEnv:
 
         torque_sq = 0.0
         motor_energy = 0.0
+        tau_front = 0.0
+        tau_rear = 0.0
         for _ in range(self.decimation):
             tau = self.robot.pd_control(q_des)
             mujoco.mj_step(self.model, self.data)
             torque_sq += float(np.mean(tau ** 2))
             motor_energy += float(np.sum(np.abs(tau * self.robot.joint_vel))) * SIM_DT
+            tau_front += float(np.mean(np.abs(tau[:6])))    # FL + FR joints
+            tau_rear += float(np.mean(np.abs(tau[6:])))     # RL + RR joints
         torque_sq /= self.decimation
+        tau_front /= self.decimation
+        tau_rear /= self.decimation
 
         x = float(self.robot.base_pos[0])
         vel_x = (x - self.prev_x) / self.cfg.control_dt      # forward speed this control step
@@ -253,6 +267,9 @@ class ParkourEnv:
             + c.w_gait * gait_score
             + c.w_clearance * clearance_score
             - c.w_drift * abs(y)
+            - c.w_height * (clearance - c.height_target) ** 2
+            - c.w_fr_balance * (tau_front - tau_rear) ** 2
+            - c.w_posture * float(np.sum((self.robot.joint_pos - DEFAULT_STANCE) ** 2))
         )
         if self.success:
             reward += c.w_goal
