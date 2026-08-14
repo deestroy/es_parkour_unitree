@@ -102,6 +102,13 @@ codebase (`go2_field` teacher, `go2_distill` student) on a SLURM cluster, with o
 spiking-network overlay in `cluster/es_snn/`. The MuJoCo implementation in this repo remains the
 CPU fallback.
 
+### Scaling status (GPU-parallel simulation)
+ROCm JAX works on the AMD MI210 (`jax 0.11`, RocmDevice visible) and **single-env MJX steps run**,
+but any `vmap`-batched `mjx.step` crashes in kernel launch (HSA malformed packet) — a ROCm-XLA
+plugin bug as of jax-rocm7 wheels, not a design problem. `scripts/mjx_benchmark.py` is the go/no-go
+test; rerun it on newer jax-rocm releases or on NVIDIA hardware, where MJX batching works today.
+Until then, scale training = the `cluster/` IsaacGym package on an NVIDIA machine.
+
 ### Next steps
 - **Distill the trained teacher** (`teacher_ft_best.pt`) into the SNN student and run the full eval so the
   bio-inspired pipeline reports real success/energy numbers (not the smoke-teacher ones).
