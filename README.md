@@ -96,6 +96,12 @@ Training stability notes (hard-won):
   down-threshold it drove all difficulties to 0 (lost challenge) — floor the difficulty and raise more
   readily to push harder. Fine-tuning from a stable base still gave the best policy above.
 
+### GPU recreation (exact paper stack)
+See **[cluster/README.md](cluster/README.md)**: IsaacGym Preview 4 + Zhuang et al.'s parkour
+codebase (`go2_field` teacher, `go2_distill` student) on a SLURM cluster, with our event-camera +
+spiking-network overlay in `cluster/es_snn/`. The MuJoCo implementation in this repo remains the
+CPU fallback.
+
 ### Next steps
 - **Distill the trained teacher** (`teacher_ft_best.pt`) into the SNN student and run the full eval so the
   bio-inspired pipeline reports real success/energy numbers (not the smoke-teacher ones).
