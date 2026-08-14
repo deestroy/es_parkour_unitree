@@ -57,7 +57,7 @@ def load_policy(kind, ckpt):
 
 
 @torch.no_grad()
-def record(policy_kind, model, aux, terrain_kind, difficulty, seconds, fps, size):
+def record(policy_kind, model, aux, terrain_kind, difficulty, seconds, fps, size, playback_ms=None):
     need_depth = (policy_kind == "student")
     hw = aux if policy_kind == "student" else (48, 64)
     env = ParkourEnv(ParkourConfig(kinds=[terrain_kind], difficulty=difficulty,
@@ -96,7 +96,7 @@ def record(policy_kind, model, aux, terrain_kind, difficulty, seconds, fps, size
     path = OUT / f"{policy_kind}_{terrain_kind}.gif"
     if frames:
         frames[0].save(path, save_all=True, append_images=frames[1:],
-                       duration=int(1000 / fps), loop=0)
+                       duration=playback_ms or int(1000 / fps), loop=0)
     return path, info.get("success", False), float(info.get("x", 0.0)), float(info.get("goal_x", 1.0))
 
 
@@ -108,6 +108,8 @@ def main():
     ap.add_argument("--difficulty", type=float, default=0.15)
     ap.add_argument("--seconds", type=float, default=6.0)
     ap.add_argument("--fps", type=int, default=25)
+    ap.add_argument("--playback-ms", type=int, default=None,
+                    help="GIF frame duration in ms (default 1000/fps = real-time; larger = slow-mo)")
     ap.add_argument("--size", type=int, nargs=2, default=[240, 360])
     args = ap.parse_args()
 
@@ -116,7 +118,7 @@ def main():
     print(f"recording {args.policy} on {args.kinds} (difficulty={args.difficulty})")
     for k in args.kinds:
         path, succ, x, gx = record(args.policy, model, aux, k, args.difficulty,
-                                   args.seconds, args.fps, tuple(args.size))
+                                   args.seconds, args.fps, tuple(args.size), args.playback_ms)
         print(f"  {k:8s} -> {path.name}  success={succ}  progress={x/gx*100:.0f}% "
               f"(x={x:.2f}/{gx:.2f})")
 
