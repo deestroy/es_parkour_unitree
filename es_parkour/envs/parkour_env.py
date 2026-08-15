@@ -65,7 +65,20 @@ class ParkourConfig:
     # anti-drag: reward swing-phase feet for lifting toward this height above local ground.
     # Without it, a 1 mm ground-skim counts as a "swing" and the rear legs learn to drag.
     w_clearance: float = 0.5
-    clearance_target: float = 0.08   # m
+    clearance_target: float = 0.12   # m (above the tallest riser at max difficulty; 0.08 rewarded
+                                     # lifting feet *almost* high enough to clear 10 cm steps)
+    # leap zone: within this x-distance before a gap edge, the anti-flight terms (w_vz, w_allfly)
+    # and the gait clock are DISABLED — a leap needs vertical velocity and an airborne phase, and
+    # penalizing them taught the robot to freeze at the edge instead of committing.
+    leap_zone: float = 0.5
+    # milestone shaping: bonus each time an obstacle's x is passed (the +10 goal bonus alone sits
+    # behind the whole course; a proximal payoff makes attempting the next obstacle worth the risk)
+    w_obstacle: float = 2.0
+    # anti-loitering: no forward progress for this long => episode fails (removes the
+    # stand-at-the-edge-and-farm-alive-reward strategy)
+    stall_seconds: float = 2.5
+    # snag penalty: non-foot contacts (calf/thigh/trunk against terrain) — catching a riser face
+    w_snag: float = 0.1
     # natural-posture terms (visual review: front legs jittery/overworked, rear underused, trunk
     # crumpling). Keep the trunk at dog height, balance front/rear effort, stay near the natural
     # joint configuration.
@@ -168,6 +181,11 @@ class ParkourEnv:
         self.gait_phase = 0.0
         self.step_count = 0
         self.success = False
+        self.n_passed = 0                 # obstacles cleared so far (milestone bonuses)
+        self.best_x = float(self.robot.base_pos[0])
+        self.stall_steps = 0              # control steps without forward progress
+        self._obstacle_xs = sorted(ox for ox, _ in self.terrain.obstacles)
+        self._obstacle_tops = {round(ox, 4): top for ox, top in self.terrain.obstacles}
         return self._obs()
 
     # ----- observation -----------------------------------------------------------
@@ -205,6 +223,30 @@ class ParkourEnv:
         vel_x = (x - self.prev_x) / self.cfg.control_dt      # forward speed this control step
         self.prev_x = x
 
+        # leap zone: approaching (or over) an obstacle — flight is allowed and a high lift required
+        next_dist = np.inf
+        next_top = 0.0
+        for ox in self._obstacle_xs:
+            d_ox = ox - x
+            if -0.35 <= d_ox <= self.cfg.leap_zone:
+                next_dist = d_ox
+                next_top = self._obstacle_tops[round(ox, 4)]
+                break
+        in_leap_zone = np.isfinite(next_dist)
+
+        # milestone bonuses: each obstacle newly passed pays out once
+        passed_now = sum(1 for ox in self._obstacle_xs if ox < x)
+        obstacle_bonus = self.cfg.w_obstacle * max(0, passed_now - self.n_passed)
+        self.n_passed = max(self.n_passed, passed_now)
+
+        # anti-loitering: fail the episode if no forward progress for stall_seconds
+        if x > self.best_x + 0.01:
+            self.best_x = x
+            self.stall_steps = 0
+        else:
+            self.stall_steps += 1
+        stalled = self.stall_steps * self.cfg.control_dt >= self.cfg.stall_seconds
+
         # feet air time: reward a stepping gait (a foot that just landed after being airborne)
         contact = self.robot.foot_contacts()
         first_contact = (self.feet_air_time > 0) & contact
@@ -224,6 +266,12 @@ class ParkourEnv:
         clearance_score = 0.0
         foot_pos = self.robot.foot_positions()
         n_swing = 0
+        # In the leap zone the lift target scales to the obstacle: clearing a 17 cm hurdle needs a
+        # ~22 cm swing apex, not the cruising 12 cm.
+        clr_target = self.cfg.clearance_target
+        if in_leap_zone:
+            lift_needed = float(next_top) - self._ground_under_base() + 0.05
+            clr_target = float(np.clip(lift_needed, self.cfg.clearance_target, 0.30))
         for i in range(4):
             leg_phase = (self.gait_phase + self.cfg.gait_offsets[i]) % 1.0
             should_stance = leg_phase < self.cfg.gait_duty
@@ -234,9 +282,21 @@ class ParkourEnv:
                 n_swing += 1
                 gz = self._ground_under_point(foot_pos[i, 0], foot_pos[i, 1])
                 h = foot_pos[i, 2] - gz
-                clearance_score += min(h, self.cfg.clearance_target) / self.cfg.clearance_target
+                clearance_score += min(h, clr_target) / clr_target
         gait_score /= 4.0                     # in [-1, 1]
         clearance_score = clearance_score / n_swing if n_swing else 0.0   # in [0, 1]
+
+        # snag detection: any NON-foot robot geom touching the world (riser faces, hurdle bars)
+        snags = 0
+        world_body = 0
+        for ci in range(self.data.ncon):
+            con = self.data.contact[ci]
+            g1, g2 = con.geom1, con.geom2
+            b1 = self.model.geom_bodyid[g1]; b2 = self.model.geom_bodyid[g2]
+            if (b1 == world_body) != (b2 == world_body):      # robot-vs-world contact
+                rg = g2 if b1 == world_body else g1
+                if rg not in self.robot.foot_geom_ids:
+                    snags += 1
 
         # termination checks
         pg = self.robot.projected_gravity
@@ -249,7 +309,8 @@ class ParkourEnv:
         self.success = x >= self.terrain.goal_x and not out_of_corridor
         self.step_count += 1
         timeout = self.step_count >= self.max_steps
-        done = bool(tipped or collapsed or fell_pit or out_of_corridor or self.success or timeout)
+        done = bool(tipped or collapsed or fell_pit or out_of_corridor or stalled
+                    or self.success or timeout)
 
         c = self.cfg
         heading = self.robot_heading_cos()
@@ -262,9 +323,11 @@ class ParkourEnv:
             - c.w_angvel * float(np.sum(self.robot.base_ang_vel[:2] ** 2))
             - c.w_upright * float(np.sum(pg[:2] ** 2))
             + c.w_airtime * airtime_reward
-            - c.w_vz * vz * vz
-            - c.w_allfly * all_fly
-            + c.w_gait * gait_score
+            - (0.0 if in_leap_zone else c.w_vz * vz * vz)
+            - (0.0 if in_leap_zone else c.w_allfly * all_fly)
+            + c.w_gait * (0.0 if in_leap_zone else gait_score)
+            + obstacle_bonus
+            - c.w_snag * snags
             + c.w_clearance * clearance_score
             - c.w_drift * abs(y)
             - c.w_height * (clearance - c.height_target) ** 2
@@ -273,13 +336,14 @@ class ParkourEnv:
         )
         if self.success:
             reward += c.w_goal
-        if tipped or collapsed or fell_pit or out_of_corridor:
+        if tipped or collapsed or fell_pit or out_of_corridor or stalled:
             reward -= 1.0
 
         self.last_action = action
         info = {
             "success": self.success, "tipped": tipped, "collapsed": collapsed,
-            "fell_pit": fell_pit, "out_of_corridor": out_of_corridor, "timeout": timeout, "x": x,
+            "fell_pit": fell_pit, "out_of_corridor": out_of_corridor, "stalled": stalled,
+            "timeout": timeout, "x": x, "obstacles_passed": self.n_passed,
             "goal_x": self.terrain.goal_x, "kind": self.terrain.kind,
             "terminal": done and not timeout, "motor_energy": motor_energy,
         }
