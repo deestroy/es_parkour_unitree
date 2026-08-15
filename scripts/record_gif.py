@@ -58,7 +58,7 @@ def load_policy(kind, ckpt):
 
 @torch.no_grad()
 def record(policy_kind, model, aux, terrain_kind, difficulty, seconds, fps, size, playback_ms=None):
-    need_depth = (policy_kind == "student")
+    need_depth = True                      # event-camera PIP is standard on all recordings
     hw = aux if policy_kind == "student" else (48, 64)
     env = ParkourEnv(ParkourConfig(kinds=[terrain_kind], difficulty=difficulty,
                                    render_depth=need_depth, depth_hw=hw,
@@ -66,7 +66,7 @@ def record(policy_kind, model, aux, terrain_kind, difficulty, seconds, fps, size
     ev = EventSimulator()
     o = env.reset(kind=terrain_kind)
     renderer = mujoco.Renderer(env.model, height=size[0], width=size[1])
-    prev_depth = o["depth"].copy() if need_depth else None
+    prev_depth = o["depth"].copy()
     h = model.init_hidden(1) if policy_kind == "student" else None
 
     every = max(1, round((1.0 / env.cfg.control_dt) / fps))
@@ -88,7 +88,14 @@ def record(policy_kind, model, aux, terrain_kind, difficulty, seconds, fps, size
 
         if t % every == 0:
             renderer.update_scene(env.data, camera=side_cam(float(env.robot.base_pos[0]), env.terrain.goal_x))
-            frames.append(Image.fromarray(renderer.render()))
+            f = Image.fromarray(renderer.render())
+            if prev_depth is not None:
+                e_ch = ev.channels(ev.diff(o["depth"], prev_depth))
+                pip = Image.fromarray(ev.to_rgb(e_ch[0] - e_ch[1])).resize((112, 84), Image.NEAREST)
+                f.paste(pip, (f.width - pip.width - 4, 4))
+            frames.append(f)
+        if policy_kind != "student":
+            prev_depth = o["depth"].copy()
         o, _, done, info = env.step(a)
         t += 1
     env.close()
