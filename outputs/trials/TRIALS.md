@@ -39,13 +39,27 @@ non-foot contacts.
 **Result @ d0.4 determ:** step 87% (climbs all six risers), parkour 52%, flat 100%; stalls 0%.
 Gap 16% / hurdle 20% — flight legal but not yet discovered.
 
-## 06-leap-discovery (in progress) — Trial A `teacher_dog5` vs Trial B `teacher_leap`
-**Trial A (shaping):** takeoff reward (upward velocity paid in the leap zone), all-feet
-obstacle-height clearance (the trot clock no longer fights lifting a leg pair), left/right torque
-balance (measured rear-left loafing at 0.87× rear-right).
-**Trial B (specialist):** same shaping, but gap+hurdle-only world at difficulty 0.5,
-transfer-initialized from dog4 so all learning budget goes to the leap skill (the paper lineage's
-`a1_leap` approach).
+## 06-leap-discovery — Trial A `teacher_dog5` vs Trial B `teacher_leap`
+**Trial A (shaping generalist):** takeoff reward in the leap zone, all-feet obstacle-height
+clearance (the trot clock no longer fights lifting a leg pair), left/right torque balance
+(measured rear-left loafing at 0.87× rear-right). All terrains, 4M steps.
+**Trial B (leap specialist):** same shaping, gap+hurdle-only world at difficulty 0.5,
+transfer-initialized from dog4 (the paper lineage's `a1_leap` approach). 2M steps.
+
+**Verdict (deterministic):**
+| | Trial B specialist | Trial A generalist | dog4 baseline |
+|---|---|---|---|
+| hurdle d0.3 | **100% SUCCESS** | 28% | 22% |
+| hurdle d0.4 | 26% | 21% | 20% |
+| gap d0.3 | 14% | 11% | **62%** |
+| step d0.4 | — | 37% | **87%** |
+| parkour d0.4 | — | **65%** | 52% |
+
+Specialization cracked the hurdle (first reliable full-course clearing) but regressed gaps;
+the extra generalist shaping traded step skill for parkour. Best-per-skill roster: dog4 for
+step/gap approach, specialist for hurdles — the paper's own conclusion (train specialists,
+then distill them into one policy) reproduced from first principles. The 28 cm flight-leap
+over gaps remains unsolved at CPU scale.
 
 ## students
 SNN student rollouts (spiking ResNet-18 + GRU + spiking MLP driven by simulated event-camera
